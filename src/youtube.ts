@@ -12,10 +12,9 @@ export function extractVideoId(url: string): string | null {
 export async function fetchSubtitles(videoId: string): Promise<string> {
   const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-  // Try multiple User-Agents to bypass bot detection
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-    'Accept-Language': 'en-US,en;q=0.9,zh;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   };
 
@@ -23,9 +22,12 @@ export async function fetchSubtitles(videoId: string): Promise<string> {
   if (!res.ok) throw new Error(`YouTube fetch failed: ${res.status}`);
   const html = await res.text();
 
-  // Extract ytInitialPlayerResponse
-  const jsonMatch = html.match(/ytInitialPlayerResponse\s*=\s*(\{.+?\});/);
-  if (!jsonMatch) throw new Error('Could not parse YouTube player response');
+  // Use greedy match with a broad pattern to handle large JSON blobs
+  const jsonMatch =
+    html.match(/ytInitialPlayerResponse\s*=\s*(\{.+\});\s*(?:var|const|let|window|if)/) ??
+    html.match(/ytInitialPlayerResponse\s*=\s*(\{[\s\S]+?\})\s*;/);
+
+  if (!jsonMatch) throw new Error('Could not parse YouTube player response - YouTube may be blocking server requests');
 
   let playerData: any;
   try { playerData = JSON.parse(jsonMatch[1]); } catch { throw new Error('Failed to parse player JSON'); }
@@ -35,11 +37,11 @@ export async function fetchSubtitles(videoId: string): Promise<string> {
 
   if (!tracks.length) throw new Error('No captions available for this video');
 
-  // Priority: en > asr (auto) > any language
+  // Priority: en manual > en auto > any asr > first track
   const track =
-    tracks.find((t: any) => t.languageCode?.startsWith('en') && !t.kind) ||
-    tracks.find((t: any) => t.languageCode?.startsWith('en')) ||
-    tracks.find((t: any) => t.kind === 'asr') ||
+    tracks.find((t: any) => t.languageCode?.startsWith('en') && !t.kind) ??
+    tracks.find((t: any) => t.languageCode?.startsWith('en')) ??
+    tracks.find((t: any) => t.kind === 'asr') ??
     tracks[0];
 
   const baseUrl: string = track.baseUrl;
