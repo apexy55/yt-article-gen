@@ -67,30 +67,28 @@ export default {
         const writer = writable.getWriter();
         const encoder = new TextEncoder();
 
-        const streamingTask = async () => {
+        // Run streaming in background - do NOT await, return the stream immediately
+        (async () => {
           try {
             if (subtitleNote) {
-              writer.write(encoder.encode(subtitleNote));
+              await writer.write(encoder.encode(subtitleNote));
             }
             await streamArticle(
               subtitles,
               body.prompt,
               env.GEMINI_API_KEY,
-              (chunk) => {
+              async (chunk) => {
                 appendArticle(sessionId, chunk);
-                writer.write(encoder.encode(chunk));
+                await writer.write(encoder.encode(chunk));
               }
             );
             finalizeArticle(sessionId);
           } catch (e: any) {
-            writer.write(encoder.encode(`<p style="color:red">生成失败: ${e.message}</p>`));
+            await writer.write(encoder.encode(`<p style="color:red">生成失败: ${e.message}</p>`));
           } finally {
-            writer.close();
+            await writer.close();
           }
-        };
-
-        // Use waitUntil to keep the worker alive for the full streaming duration
-        ctx.waitUntil(streamingTask());
+        })();
 
         return new Response(readable, {
           headers: {
@@ -109,8 +107,8 @@ export default {
     if (pathname === '/5w1h' && request.method === 'POST') {
       try {
         const body = await request.json() as { sessionId: string; sectionTitle: string; sectionContent: string };
-        const ctx2 = getContext(body.sessionId);
-        if (!ctx2) return new Response(JSON.stringify({ error: '会话已过期，请重新生成文章' }), {
+        const sessionCtx = getContext(body.sessionId);
+        if (!sessionCtx) return new Response(JSON.stringify({ error: '会话已过期，请重新生成文章' }), {
           status: 404,
           headers: { 'Content-Type': 'application/json' },
         });
