@@ -168,7 +168,7 @@ async function fetchViaPageScrape(videoId: string): Promise<string | null> {
 
 export async function fetchSubtitles(videoId: string): Promise<string> {
   const strategies = [
-    { name: 'transcript-ai', fn: () => fetchViaTranscriptAI(videoId) },
+    
     { name: 'page-scrape', fn: () => fetchViaPageScrape(videoId) },
     { name: 'tvhtml5', fn: () => fetchViaTVHTML5(videoId) },
     { name: 'ios', fn: () => fetchViaIOS(videoId) },
