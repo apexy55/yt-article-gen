@@ -1,4 +1,4 @@
- vc bfexport function extractVideoId(url: string): string | null {
+ export function extractVideoId(url: string): string | null {
   try {
     const u = new URL(url);
     if (u.hostname.includes('youtube.com')) return u.searchParams.get('v');
