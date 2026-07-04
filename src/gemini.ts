@@ -22,7 +22,7 @@ export async function streamArticle(
 - 直接输出HTML内容，不要用markdown代码块包裹
 - 不要输出 \`\`\`html 或 \`\`\` 等标记
 - 不要包含<!DOCTYPE>或<html>外层标签
-- 第一个字符必须是 < (HTML标签)
+- 第一个字符必须是 < （HTML标签）
 
 视频字幕：
 ${subtitles}`;
@@ -47,15 +47,12 @@ ${subtitles}`;
   const reader = resp.body!.getReader();
   const decoder = new TextDecoder();
   let full = '';
-  let buffer = '';
-  let sentLength = 0;
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
+    const chunk = decoder.decode(value, { stream: true });
+    const lines = chunk.split('\n');
     for (const line of lines) {
       if (!line.startsWith('data: ')) continue;
       const data = line.slice(6).trim();
@@ -63,26 +60,22 @@ ${subtitles}`;
       try {
         const parsed = JSON.parse(data);
         const text = parsed?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-        if (text) full += text;
-      } catch { /* skip malformed */ }
-    }
-    // strip markdown fences from accumulated text, then stream new portion
-    const clean = full
-      .replace(/^```html\s*/i, '')
-      .replace(/^```\s*/i, '')
-      .replace(/```\s*$/i, '')
-      .trim();
-    if (clean.length > sentLength) {
-      onChunk(clean.slice(sentLength));
-      sentLength = clean.length;
+        if (text) {
+          // Strip markdown code fences if Gemini accidentally includes them
+          const cleaned = text
+            .replace(/^```html\s*/i, '')
+            .replace(/^```\s*/i, '')
+            .replace(/```\s*$/i, '');
+          full += cleaned;
+          onChunk(cleaned);
+        }
+      } catch {
+        // ignore malformed SSE lines
+      }
     }
   }
 
-  return full
-    .replace(/^```html\s*/i, '')
-    .replace(/^```\s*/i, '')
-    .replace(/```\s*$/i, '')
-    .trim();
+  return full;
 }
 
 export async function generate5W1H(
@@ -92,11 +85,11 @@ export async function generate5W1H(
   apiKey: string
 ): Promise<{ who: string; what: string; when: string; where: string; why: string; how: string }> {
   const prompt = `基于以下文章段落，用简洁中文回答5W1H（每项不超过50字）：
-
 章节标题：${sectionTitle}
 章节内容：${sectionContent}
 
-请以JSON格式返回，字段为：who, what, when, where, why, how`;
+请严格以JSON格式返回，不要包含任何markdown代码块标记，直接输出纯JSON，字段为：who, what, when, where, why, how
+示例格式：{"who":"...","what":"...","when":"...","where":"...","why":"...","how":"..."}`;
 
   const resp = await fetch(
     `${GEMINI_API}:generateContent?key=${apiKey}`,
@@ -116,7 +109,38 @@ export async function generate5W1H(
   }
 
   const json = await resp.json();
-  const text = json?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
-  const clean = text.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
-  return JSON.parse(clean);
+  const text: string = json?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
+
+  // Robustly strip all markdown fences and whitespace
+  const clean = text
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```\s*$/i, '')
+    .trim();
+
+  try {
+    const result = JSON.parse(clean);
+    return {
+      who: result.who ?? '',
+      what: result.what ?? '',
+      when: result.when ?? '',
+      where: result.where ?? '',
+      why: result.why ?? '',
+      how: result.how ?? '',
+    };
+  } catch {
+    // If JSON parse fails, try to extract values with regex as last resort
+    const extract = (key: string) => {
+      const m = clean.match(new RegExp(`"${key}"\\s*:\\s*"([^"]*?)"`, 'i'));
+      return m?.[1] ?? '无法解析';
+    };
+    return {
+      who: extract('who'),
+      what: extract('what'),
+      when: extract('when'),
+      where: extract('where'),
+      why: extract('why'),
+      how: extract('how'),
+    };
+  }
 }
