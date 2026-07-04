@@ -107,12 +107,6 @@ export default {
     if (pathname === '/5w1h' && request.method === 'POST') {
       try {
         const body = await request.json() as { sessionId: string; sectionTitle: string; sectionContent: string };
-        const sessionCtx = getContext(body.sessionId);
-        if (!sessionCtx) return new Response(JSON.stringify({ error: '会话已过期，请重新生成文章' }), {
-          status: 404,
-          headers: { 'Content-Type': 'application/json' },
-        });
-
         const result = await generate5W1H(
           body.sectionTitle,
           body.sectionContent,
