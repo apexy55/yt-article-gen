@@ -4,10 +4,10 @@ export async function streamArticle(
   subtitles: string,
   userPrompt: string | undefined,
   apiKey: string,
-  onChunk: (text: string) => void
+  onChunk: (text: string) => void | Promise<void>
 ): Promise<string> {
   const constraint = userPrompt
-    ? `\n\n用户要求（请尽量满足，但不超出范围）：\n${userPrompt}`
+    ? `\n\n用户要求（请尽量满足，但不超出范围）： \n${userPrompt}`
     : '';
 
   const prompt = `你是专业内容创作者。请基于以下YouTube字幕，生成一篇精彩的中文视频对话内容文章。
@@ -22,7 +22,7 @@ export async function streamArticle(
 - 直接输出HTML内容，不要用markdown代码块包裹
 - 不要输出 \`\`\`html 或 \`\`\` 等标记
 - 不要包含<!DOCTYPE>或<html>外层标签
-- 第一个字符必须是 < （HTML标签）
+- 第一个字符必须是 <  （HTML标签）
 
 视频字幕：
 ${subtitles}`;
@@ -40,38 +40,39 @@ ${subtitles}`;
   );
 
   if (!resp.ok) {
-    const err = await resp.text();
-    throw new Error(`Gemini API error ${resp.status}: ${err}`);
+    const errText = await resp.text();
+    throw new Error(`Gemini API 错误 ${resp.status}: ${errText.slice(0, 200)}`);
   }
 
   const reader = resp.body!.getReader();
   const decoder = new TextDecoder();
   let full = '';
+  let leftover = '';
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    const chunk = decoder.decode(value, { stream: true });
-    const lines = chunk.split('\n');
+    const raw = decoder.decode(value, { stream: true });
+    leftover += raw;
+    const lines = leftover.split('\n');
+    leftover = lines.pop() ?? '';
+
     for (const line of lines) {
       if (!line.startsWith('data: ')) continue;
       const data = line.slice(6).trim();
       if (data === '[DONE]') continue;
       try {
         const parsed = JSON.parse(data);
-        const text = parsed?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-        if (text) {
-          // Strip markdown code fences if Gemini accidentally includes them
-          const cleaned = text
-            .replace(/^```html\s*/i, '')
-            .replace(/^```\s*/i, '')
-            .replace(/```\s*$/i, '');
-          full += cleaned;
-          onChunk(cleaned);
-        }
-      } catch {
-        // ignore malformed SSE lines
-      }
+        let text = parsed?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+        if (!text) continue;
+        // Strip markdown code fences if Gemini accidentally adds them
+        text = text
+          .replace(/^```html\s*/i, '')
+          .replace(/^```\s*/i, '')
+          .replace(/\s*```$/i, '');
+        full += text;
+        await onChunk(text);
+      } catch { /* parse error, skip */ }
     }
   }
 
@@ -81,15 +82,16 @@ ${subtitles}`;
 export async function generate5W1H(
   sectionTitle: string,
   sectionContent: string,
-  sessionId: string,
+  _sessionId: string,
   apiKey: string
 ): Promise<{ who: string; what: string; when: string; where: string; why: string; how: string }> {
-  const prompt = `基于以下文章段落，用简洁中文回答5W1H（每项不超过50字）：
+  const prompt = `对以下章节进行5W1H分析，输出中文JSON对象，包含who/what/when/where/why/how六个字段。
 章节标题：${sectionTitle}
-章节内容：${sectionContent}
+章节内容：${sectionContent.slice(0, 1000)}
 
-请严格以JSON格式返回，不要包含任何markdown代码块标记，直接输出纯JSON，字段为：who, what, when, where, why, how
-示例格式：{"who":"...","what":"...","when":"...","where":"...","why":"...","how":"..."}`;
+要求：
+- 直接输出JSON，不要包裹在代码块中
+- 每个字段简明扬要，50字内`;
 
   const resp = await fetch(
     `${GEMINI_API}:generateContent?key=${apiKey}`,
@@ -103,36 +105,19 @@ export async function generate5W1H(
     }
   );
 
-  if (!resp.ok) {
-    const err = await resp.text();
-    throw new Error(`Gemini API error ${resp.status}: ${err}`);
-  }
+  if (!resp.ok) throw new Error(`Gemini API 错误 ${resp.status}`);
 
-  const json = await resp.json();
-  const text: string = json?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
-
-  // Robustly strip all markdown fences and whitespace
-  const clean = text
-    .replace(/^```json\s*/i, '')
-    .replace(/^```\s*/i, '')
-    .replace(/```\s*$/i, '')
-    .trim();
+  const data: any = await resp.json();
+  let text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
+  text = text.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
 
   try {
-    const result = JSON.parse(clean);
-    return {
-      who: result.who ?? '',
-      what: result.what ?? '',
-      when: result.when ?? '',
-      where: result.where ?? '',
-      why: result.why ?? '',
-      how: result.how ?? '',
-    };
+    return JSON.parse(text);
   } catch {
-    // If JSON parse fails, try to extract values with regex as last resort
+    // Regex fallback
     const extract = (key: string) => {
-      const m = clean.match(new RegExp(`"${key}"\\s*:\\s*"([^"]*?)"`, 'i'));
-      return m?.[1] ?? '无法解析';
+      const m = text.match(new RegExp(`"${key}"\\s*:\\s*"([^"]*)"`, 'i'));
+      return m ? m[1] : '未提及';
     };
     return {
       who: extract('who'),
