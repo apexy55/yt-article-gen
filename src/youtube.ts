@@ -23,7 +23,7 @@ function eventsToText(events: any[]): string {
 
 function ytHeaders(cookies?: string): Record<string, string> {
   const h: Record<string, string> = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept-Language': 'en-US,en;q=0.9',
     'Origin': 'https://www.youtube.com',
   };
@@ -31,91 +31,87 @@ function ytHeaders(cookies?: string): Record<string, string> {
   return h;
 }
 
-// Strategy 1: Direct timedtext API
-async function fetchViaTimedtext(videoId: string, cookies?: string): Promise<string | null> {
-  const langs = ['en', 'en-US', 'en-GB', 'a.en'];
-  for (const lang of langs) {
-    try {
-      const url = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${lang}&fmt=json3&xorb=2&xobt=3&xovt=3`;
-      const resp = await fetch(url, {
-        headers: { ...ytHeaders(cookies), 'Referer': `https://www.youtube.com/watch?v=${videoId}` },
-      });
-      if (!resp.ok) continue;
-      const data: any = await resp.json();
-      if (!data?.events?.length) continue;
-      const text = eventsToText(data.events);
-      if (text.length > 100) return text;
-    } catch { continue; }
+async function fetchViaSupadata(videoId: string, apiKey: string): Promise<string> {
+  const url = `https://api.supadata.ai/v1/transcript?url=${encodeURIComponent('https://www.youtube.com/watch?v=' + videoId)}&text=true`;
+  const res = await fetch(url, {
+    headers: { 'x-api-key': apiKey },
+  });
+  if (!res.ok) throw new Error(`Supadata ${res.status}`);
+  const data = await res.json() as { content?: string; error?: string };
+  if (data.error) throw new Error(`Supadata error: ${data.error}`);
+  if (!data.content || data.content.length < 100) throw new Error('Supadata: no-content');
+  return data.content;
+}
+
+async function fetchViaTimedtext(videoId: string, cookies?: string): Promise<string> {
+  const listUrl = `https://video.google.com/timedtext?type=list&v=${videoId}`;
+  const listRes = await fetch(listUrl, { headers: ytHeaders(cookies) });
+  const listXml = await listRes.text();
+  const langMatch = listXml.match(/lang_code="([^"]+)"/);
+  const lang = langMatch ? langMatch[1] : 'en';
+  const transcriptUrl = `https://video.google.com/timedtext?lang=${lang}&v=${videoId}&fmt=json3`;
+  const res = await fetch(transcriptUrl, { headers: ytHeaders(cookies) });
+  if (!res.ok) throw new Error(`timedtext HTTP ${res.status}`);
+  const data = await res.json() as { events?: any[] };
+  if (!data.events?.length) throw new Error('timedtext: no-tracks');
+  return eventsToText(data.events);
+}
+
+async function fetchViaInnerTube(videoId: string, cookies?: string): Promise<string> {
+  const body = {
+    context: { client: { clientName: 'WEB', clientVersion: '2.20240101' } },
+    videoId,
+  };
+  const res = await fetch('https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8', {
+    method: 'POST',
+    headers: { ...ytHeaders(cookies), 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`innertube HTTP ${res.status}`);
+  const data = await res.json() as any;
+  const tracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+  if (!tracks?.length) throw new Error('innertube: no-tracks');
+  const track = tracks.find((t: any) => t.languageCode === 'en') ?? tracks[0];
+  const captionRes = await fetch(track.baseUrl + '&fmt=json3', { headers: ytHeaders(cookies) });
+  if (!captionRes.ok) throw new Error(`innertube caption HTTP ${captionRes.status}`);
+  const captionData = await captionRes.json() as { events?: any[] };
+  if (!captionData.events?.length) throw new Error('innertube: no-tracks');
+  return eventsToText(captionData.events);
+}
+
+async function fetchViaPageScrape(videoId: string, cookies?: string): Promise<string> {
+  const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, { headers: ytHeaders(cookies) });
+  if (!pageRes.ok) throw new Error(`page-scrape HTTP ${pageRes.status}`);
+  const html = await pageRes.text();
+  const match = html.match(/"captions":(\{.*?\}),"videoDetails"/);
+  if (!match) throw new Error('page-scrape: no-tracks');
+  const captionsData = JSON.parse(match[1]) as any;
+  const tracks = captionsData?.playerCaptionsTracklistRenderer?.captionTracks;
+  if (!tracks?.length) throw new Error('page-scrape: no-tracks');
+  const track = tracks.find((t: any) => t.languageCode === 'en') ?? tracks[0];
+  const captionRes = await fetch(track.baseUrl + '&fmt=json3', { headers: ytHeaders(cookies) });
+  if (!captionRes.ok) throw new Error(`page-scrape caption HTTP ${captionRes.status}`);
+  const captionData = await captionRes.json() as { events?: any[] };
+  if (!captionData.events?.length) throw new Error('page-scrape: no-tracks');
+  return eventsToText(captionData.events);
+}
+
+export async function fetchSubtitles(videoId: string, cookies?: string, supadataApiKey?: string): Promise<string> {
+  const strategies: { name: string; fn: () => Promise<string> }[] = [];
+  if (supadataApiKey) {
+    strategies.push({ name: 'supadata', fn: () => fetchViaSupadata(videoId, supadataApiKey) });
   }
-  return null;
-}
-
-// Strategy 2: InnerTube with cookies
-async function fetchViaInnerTube(videoId: string, cookies?: string): Promise<string | null> {
-  try {
-    const resp = await fetch('https://www.youtube.com/youtubei/v1/player', {
-      method: 'POST',
-      headers: {
-        ...ytHeaders(cookies),
-        'Content-Type': 'application/json',
-        'X-YouTube-Client-Name': '1',
-        'X-YouTube-Client-Version': '2.20240101.00.00',
-        'Referer': `https://www.youtube.com/watch?v=${videoId}`,
-      },
-      body: JSON.stringify({
-        context: { client: { clientName: 'WEB', clientVersion: '2.20240101.00.00', hl: 'en', gl: 'US' } },
-        videoId,
-      }),
-    });
-    if (!resp.ok) return null;
-    const data: any = await resp.json();
-    const tracks: any[] = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
-    if (!tracks.length) return null;
-    const track = tracks.find((t: any) => t.languageCode?.startsWith('en') && !t.kind)
-      ?? tracks.find((t: any) => t.languageCode?.startsWith('en'))
-      ?? tracks[0];
-    if (!track?.baseUrl) return null;
-    if (!track.baseUrl.includes('youtube.com') && !track.baseUrl.includes('googlevideo.com')) return null;
-    const capResp = await fetch(track.baseUrl + '&fmt=json3', { headers: ytHeaders(cookies) });
-    if (!capResp.ok) return null;
-    const capData: any = await capResp.json();
-    const text = eventsToText(capData.events ?? []);
-    return text.length > 100 ? text : null;
-  } catch { return null; }
-}
-
-// Strategy 3: Page scrape
-async function fetchViaPageScrape(videoId: string, cookies?: string): Promise<string | null> {
-  try {
-    const resp = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
-      headers: { ...ytHeaders(cookies), 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' },
-    });
-    if (!resp.ok) return null;
-    const html = await resp.text();
-    const match = html.match(/"captionTracks":\s*\[\{"baseUrl":"([^"]+)"/);
-    if (!match) return null;
-    const baseUrl = match[1].replace(/\\u0026/g, '&');
-    if (!baseUrl.includes('youtube.com') && !baseUrl.includes('googlevideo.com')) return null;
-    const capResp = await fetch(baseUrl + '&fmt=json3', { headers: ytHeaders(cookies) });
-    if (!capResp.ok) return null;
-    const capData: any = await capResp.json();
-    const text = eventsToText(capData.events ?? []);
-    return text.length > 100 ? text : null;
-  } catch { return null; }
-}
-
-export async function fetchSubtitles(videoId: string, cookies?: string): Promise<string> {
-  const strategies = [
+  strategies.push(
     { name: 'timedtext', fn: () => fetchViaTimedtext(videoId, cookies) },
     { name: 'innertube', fn: () => fetchViaInnerTube(videoId, cookies) },
     { name: 'page-scrape', fn: () => fetchViaPageScrape(videoId, cookies) },
-  ];
+  );
   const logs: string[] = [];
   for (const { name, fn } of strategies) {
     try {
       const result = await fn();
       if (result && result.length > 100) return result;
-      logs.push(`${name}: no-tracks`);
+      logs.push(`${name}: no-content`);
     } catch (e: any) {
       logs.push(`${name}: ${e.message}`);
     }
