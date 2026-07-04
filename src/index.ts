@@ -2,7 +2,6 @@ import { getHTML } from './frontend';
 import { fetchSubtitles, extractVideoId } from './youtube';
 import { streamArticle, generate5W1H } from './gemini';
 import { saveContext, getContext, appendArticle, finalizeArticle } from './store';
-
 // Fallback subtitles for when YouTube blocks server-side fetch
 const FALLBACK_SUBTITLES = `[00:00] Welcome to this conversation with Marc Andreessen, co-founder of Andreessen Horowitz.
 [00:10] Today we explore the trillion-dollar question: what does AI mean for the economy?
@@ -29,44 +28,38 @@ const FALLBACK_SUBTITLES = `[00:00] Welcome to this conversation with Marc Andre
 [07:30] The real safety risk is not building AI fast enough - falling behind adversaries is more dangerous.
 [08:00] Learn to use AI tools - they amplify whatever skills you have.
 [08:30] Focus on uniquely human capabilities: creativity, judgment, relationships, leadership.`;
-
 export interface Env {
-  GEMINI_API_KEY: string;   YOUTUBE_COOKIES?: string;
+  GEMINI_API_KEY: string;
+  SUPADATA_API_KEY?: string;
+  YOUTUBE_COOKIES?: string;
 }
-
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const pathname = url.pathname;
-
     if (pathname === '/' || pathname === '') {
       return new Response(getHTML(), {
         headers: { 'Content-Type': 'text/html;charset=UTF-8' },
       });
     }
-
     if (pathname === '/generate' && request.method === 'POST') {
       try {
         const body = await request.json() as { url: string; prompt?: string };
         const videoId = extractVideoId(body.url);
-
         let subtitles: string;
         let subtitleNote = '';
         try {
           if (!videoId) throw new Error('请提供有效的 YouTube 视频链接');
-          subtitles = await fetchSubtitles(videoId, env.YOUTUBE_COOKIES);
+          subtitles = await fetchSubtitles(videoId, env.YOUTUBE_COOKIES, env.SUPADATA_API_KEY);
         } catch (subErr: any) {
           subtitles = FALLBACK_SUBTITLES;
           subtitleNote = `<p style="background:#fff3cd;border:1px solid #ffc107;padding:8px 12px;border-radius:6px;color:#856404;margin-bottom:16px">⚠️ 字幕获取失败（${subErr.message}），展示以下示例内容。</p>`;
         }
-
         const sessionId = crypto.randomUUID();
         saveContext(sessionId, { subtitles, article: '', userPrompt: body.prompt, createdAt: Date.now() });
-
         const { readable, writable } = new TransformStream();
         const writer = writable.getWriter();
         const encoder = new TextEncoder();
-
         // Run streaming in background - do NOT await, return the stream immediately
         (async () => {
           try {
@@ -89,7 +82,6 @@ export default {
             await writer.close();
           }
         })();
-
         return new Response(readable, {
           headers: {
             'Content-Type': 'text/plain;charset=UTF-8',
@@ -103,7 +95,6 @@ export default {
         });
       }
     }
-
     if (pathname === '/5w1h' && request.method === 'POST') {
       try {
         const body = await request.json() as { sessionId: string; sectionTitle: string; sectionContent: string };
@@ -113,7 +104,6 @@ export default {
           body.sessionId,
           env.GEMINI_API_KEY
         );
-
         return new Response(JSON.stringify(result), {
           headers: { 'Content-Type': 'application/json' },
         });
@@ -124,7 +114,6 @@ export default {
         });
       }
     }
-
     return new Response('Not Found', { status: 404 });
   },
 };
