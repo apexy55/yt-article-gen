@@ -18,10 +18,14 @@ export async function streamArticle(
 3. 文章要生动、有洞察力，体现视频核心观点
 4. 文章开头加<p class="summary">摘要</p>${constraint}
 
-视频字幕：
-${subtitles}
+重要：
+- 直接输出HTML内容，不要用markdown代码块包裹
+- 不要输出 \`\`\`html 或 \`\`\` 等标记
+- 不要包含<!DOCTYPE>或<html>外层标签
+- 第一个字符必须是 < (HTML标签)
 
-直接输出HTML内容（不含<!DOCTYPE>或<html>外层标签）：`;
+视频字幕：
+${subtitles}`;
 
   const resp = await fetch(
     `${GEMINI_API}:streamGenerateContent?alt=sse&key=${apiKey}`,
@@ -30,7 +34,7 @@ ${subtitles}
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.7, maxOutputTokens: 4096 },
+        generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
       }),
     }
   );
@@ -43,50 +47,56 @@ ${subtitles}
   const reader = resp.body!.getReader();
   const decoder = new TextDecoder();
   let full = '';
+  let buffer = '';
+  let sentLength = 0;
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    const chunk = decoder.decode(value, { stream: true });
-    for (const line of chunk.split('\n')) {
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
       if (!line.startsWith('data: ')) continue;
       const data = line.slice(6).trim();
       if (data === '[DONE]') continue;
       try {
         const parsed = JSON.parse(data);
         const text = parsed?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-        if (text) { full += text; onChunk(text); }
+        if (text) full += text;
       } catch { /* skip malformed */ }
     }
+    // strip markdown fences from accumulated text, then stream new portion
+    const clean = full
+      .replace(/^```html\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/```\s*$/i, '')
+      .trim();
+    if (clean.length > sentLength) {
+      onChunk(clean.slice(sentLength));
+      sentLength = clean.length;
+    }
   }
-  return full;
+
+  return full
+    .replace(/^```html\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```\s*$/i, '')
+    .trim();
 }
 
 export async function generate5W1H(
   sectionTitle: string,
   sectionContent: string,
-  fullArticle: string,
+  sessionId: string,
   apiKey: string
 ): Promise<{ who: string; what: string; when: string; where: string; why: string; how: string }> {
-  const prompt = `基于以下视频文章的特定章节，结合全文上下文，生成该章节的5W1H结构化总结。
-
-全文上下文（前2000字）：
-${fullArticle.slice(0, 2000)}
+  const prompt = `基于以下文章段落，用简洁中文回答5W1H（每项不超过50字）：
 
 章节标题：${sectionTitle}
-章节内容：
-${sectionContent}
+章节内容：${sectionContent}
 
-严格以JSON格式回复（每个字段1-2句中文）：
-{
-  "who": "...",
-  "what": "...",
-  "when": "...",
-  "where": "...",
-  "why": "...",
-  "how": "..."
-}
-只返回JSON，不含其他文字。`;
+请以JSON格式返回，字段为：who, what, when, where, why, how`;
 
   const resp = await fetch(
     `${GEMINI_API}:generateContent?key=${apiKey}`,
@@ -99,9 +109,14 @@ ${sectionContent}
       }),
     }
   );
-  if (!resp.ok) throw new Error('Gemini 5W1H request failed');
-  const data: any = await resp.json();
-  const text: string = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
-  const json = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-  return JSON.parse(json);
+
+  if (!resp.ok) {
+    const err = await resp.text();
+    throw new Error(`Gemini API error ${resp.status}: ${err}`);
+  }
+
+  const json = await resp.json();
+  const text = json?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
+  const clean = text.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
+  return JSON.parse(clean);
 }
