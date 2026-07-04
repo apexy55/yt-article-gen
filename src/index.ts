@@ -31,7 +31,7 @@ const FALLBACK_SUBTITLES = `[00:00] Welcome to this conversation with Marc Andre
 [08:30] Focus on uniquely human capabilities: creativity, judgment, relationships, leadership.`;
 
 export interface Env {
-  GEMINI_API_KEY: string;
+  GEMINI_API_KEY: string;   YOUTUBE_COOKIES?: string;
 }
 
 export default {
@@ -54,7 +54,7 @@ export default {
         let subtitleNote = '';
         try {
           if (!videoId) throw new Error('请提供有效的 YouTube 视频链接');
-          subtitles = await fetchSubtitles(videoId);
+          subtitles = await fetchSubtitles(videoId, env.YOUTUBE_COOKIES);
         } catch (subErr: any) {
           subtitles = FALLBACK_SUBTITLES;
           subtitleNote = `<p style="background:#fff3cd;border:1px solid #ffc107;padding:8px 12px;border-radius:6px;color:#856404;margin-bottom:16px">⚠️ 字幕获取失败（${subErr.message}），展示以下示例内容。</p>`;
