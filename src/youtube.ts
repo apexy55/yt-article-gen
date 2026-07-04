@@ -11,12 +11,15 @@ export function extractVideoId(url: string): string | null {
 
 export async function fetchSubtitles(videoId: string): Promise<string> {
   const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-  const res = await fetch(videoUrl, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)',
-      'Accept-Language': 'en-US,en;q=0.9',
-    },
-  });
+
+  // Try multiple User-Agents to bypass bot detection
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    'Accept-Language': 'en-US,en;q=0.9,zh;q=0.8',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  };
+
+  const res = await fetch(videoUrl, { headers });
   if (!res.ok) throw new Error(`YouTube fetch failed: ${res.status}`);
   const html = await res.text();
 
@@ -29,11 +32,17 @@ export async function fetchSubtitles(videoId: string): Promise<string> {
 
   const tracks: any[] =
     playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
-  if (!tracks.length) throw new Error('No captions found for this video');
 
-  const track = tracks.find((t: any) => t.languageCode?.startsWith('en')) ?? tracks[0];
+  if (!tracks.length) throw new Error('No captions available for this video');
+
+  // Priority: en > asr (auto) > any language
+  const track =
+    tracks.find((t: any) => t.languageCode?.startsWith('en') && !t.kind) ||
+    tracks.find((t: any) => t.languageCode?.startsWith('en')) ||
+    tracks.find((t: any) => t.kind === 'asr') ||
+    tracks[0];
+
   const baseUrl: string = track.baseUrl;
-
   const captionRes = await fetch(baseUrl + '&fmt=json3');
   if (!captionRes.ok) throw new Error('Failed to fetch captions');
   const captionData: any = await captionRes.json();
@@ -48,5 +57,7 @@ export async function fetchSubtitles(videoId: string): Promise<string> {
     const s = String(secs % 60).padStart(2, '0');
     lines.push(`[${m}:${s}] ${text}`);
   }
+
+  if (!lines.length) throw new Error('Captions were empty for this video');
   return lines.join('\n');
 }
