@@ -7,89 +7,46 @@ export function extractVideoId(url: string): string | null {
   return null;
 }
 
-// Helper: extract caption tracks from YouTube page HTML using bracket-balanced parsing
-function extractTracksFromHtml(html: string): any[] | null {
-  // Try ytInitialPlayerResponse first (grab large JSON blob)
-  const prIdx = html.indexOf('ytInitialPlayerResponse');
-  if (prIdx !== -1) {
-    const braceStart = html.indexOf('{', prIdx);
-    if (braceStart !== -1) {
-      let depth = 0;
-      let i = braceStart;
-      for (; i < Math.min(html.length, braceStart + 2000000); i++) {
-        if (html[i] === '{') depth++;
-        else if (html[i] === '}') {
-          depth--;
-          if (depth === 0) break;
-        }
-      }
-      try {
-        const playerData = JSON.parse(html.slice(braceStart, i + 1));
-        const tracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-        if (tracks?.length) return tracks;
-      } catch { /* ignore, try fallback */ }
-    }
-  }
-  // Fallback: find captionTracks array
-  const ctIdx = html.indexOf('"captionTracks"');
-  if (ctIdx === -1) return null;
-  const arrStart = html.indexOf('[', ctIdx);
-  if (arrStart === -1) return null;
+// Helper: bracket-balanced extraction of an array starting at given position
+function extractBalancedArray(html: string, startIdx: number): any[] | null {
   let depth = 0;
-  let i = arrStart;
+  let i = startIdx;
   for (; i < html.length; i++) {
-    if (html[i] === '[' || html[i] === '{') depth++;
-    else if (html[i] === ']' || html[i] === '}') {
+    const c = html[i];
+    if (c === '[' || c === '{') depth++;
+    else if (c === ']' || c === '}') {
       depth--;
       if (depth === 0) break;
     }
   }
   try {
-    return JSON.parse(html.slice(arrStart, i + 1));
+    return JSON.parse(html.slice(startIdx, i + 1));
   } catch {
     return null;
   }
 }
 
-// Strategy 1: Fetch YouTube page HTML (with consent cookie bypass)
-async function fetchViaYouTubePage(videoId: string): Promise<string | null> {
-  const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Cookie': 'CONSENT=YES+cb; YSC=DwKYllHNwuw; VISITOR_INFO1_LIVE=oKckVSqvaGw',
-  };
-  const pageResp = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=en`, { headers });
-  if (!pageResp.ok) throw new Error(`HTTP ${pageResp.status}`);
-  const html = await pageResp.text();
-
-  // Check if we got a consent page
-  if (html.includes('consent.youtube.com') && !html.includes('ytInitialPlayerResponse')) {
-    throw new Error('consent-page: YouTube requires consent');
+// Helper: find captionTracks in YouTube page HTML
+function extractTracksFromHtml(html: string): any[] | null {
+  // Find all occurrences of captionTracks and try each
+  let searchFrom = 0;
+  while (true) {
+    const ctIdx = html.indexOf('"captionTracks"', searchFrom);
+    if (ctIdx === -1) break;
+    const arrStart = html.indexOf('[', ctIdx);
+    if (arrStart === -1) break;
+    const tracks = extractBalancedArray(html, arrStart);
+    if (tracks && Array.isArray(tracks) && tracks.length > 0 && tracks[0]?.baseUrl) {
+      return tracks;
+    }
+    searchFrom = ctIdx + 1;
   }
+  return null;
+}
 
-  const tracks = extractTracksFromHtml(html);
-  if (!tracks || !tracks.length) {
-    // Include diagnostic info in error
-    const hasPlayer = html.includes('ytInitialPlayerResponse');
-    const hasCaptions = html.includes('captionTracks');
-    throw new Error(`no-tracks: hasPlayer=${hasPlayer}, hasCaptions=${hasCaptions}, htmlLen=${html.length}`);
-  }
-
-  const preferred = tracks.find((t: any) => t.languageCode === 'en' && !t.kind)
-    || tracks.find((t: any) => t.languageCode === 'en')
-    || tracks[0];
-
-  let baseUrl: string = preferred?.baseUrl ?? '';
-  if (!baseUrl) throw new Error('no-baseUrl in track');
-  baseUrl = baseUrl.replace(/\\u0026/g, '&');
-
-  const captionResp = await fetch(baseUrl + '&fmt=json3', { headers });
-  if (!captionResp.ok) throw new Error(`caption HTTP ${captionResp.status}`);
-  const captionData: any = await captionResp.json();
-
-  const events: any[] = captionData?.events ?? [];
-  const lines = events
+// Helper: convert caption events to timestamped text
+function eventsToText(events: any[]): string {
+  return events
     .filter((e: any) => e.segs)
     .map((e: any) => {
       const secs = Math.floor((e.tStartMs ?? 0) / 1000);
@@ -98,31 +55,73 @@ async function fetchViaYouTubePage(videoId: string): Promise<string | null> {
       const text = e.segs.map((seg: any) => seg.utf8 ?? '').join('').trim();
       return text ? `[${m}:${s}] ${text}` : null;
     })
-    .filter(Boolean);
-
-  if (!lines.length) throw new Error('no caption events in json3');
-  return lines.join('\n');
+    .filter(Boolean)
+    .join('\n');
 }
 
-// Strategy 2: InnerTube API (Android client)
+// Strategy 1: Fetch YouTube page HTML and extract caption track URLs
+async function fetchViaYouTubePage(videoId: string): Promise<string | null> {
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Cookie': 'CONSENT=YES+cb.20210328-17-0; YSC=DwKYllHNwuw',
+  };
+  const pageResp = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=en`, { headers });
+  if (!pageResp.ok) throw new Error(`HTTP ${pageResp.status}`);
+  const html = await pageResp.text();
+
+  const hasPlayer = html.includes('ytInitialPlayerResponse');
+  const hasCaptions = html.includes('captionTracks');
+
+  if (!hasCaptions) {
+    throw new Error(`no-captions-in-html: hasPlayer=${hasPlayer}, len=${html.length}`);
+  }
+
+  const tracks = extractTracksFromHtml(html);
+  if (!tracks || !tracks.length) {
+    throw new Error(`tracks-parse-failed: hasPlayer=${hasPlayer}, hasCaptions=${hasCaptions}`);
+  }
+
+  // Prefer English manual, then English auto, then first
+  const preferred = tracks.find((t: any) => t.languageCode === 'en' && !t.kind)
+    || tracks.find((t: any) => t.languageCode === 'en')
+    || tracks[0];
+
+  let baseUrl: string = preferred?.baseUrl ?? '';
+  if (!baseUrl) throw new Error('no-baseUrl in track');
+  // Decode \u0026 -> &
+  baseUrl = baseUrl.replace(/\\u0026/g, '&');
+
+  const captionResp = await fetch(baseUrl + '&fmt=json3', { headers });
+  if (!captionResp.ok) throw new Error(`caption-HTTP ${captionResp.status}`);
+  const captionData: any = await captionResp.json();
+
+  const text = eventsToText(captionData?.events ?? []);
+  if (!text) throw new Error('no-caption-events');
+  return text;
+}
+
+// Strategy 2: InnerTube WEB client (standard public API key)
 async function fetchViaInnerTube(videoId: string): Promise<string | null> {
+  // Use the same API key as the YouTube web client
   const playerResp = await fetch(
-    'https://www.youtube.com/youtubei/v1/player?prettyPrint=false',
+    'https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8&prettyPrint=false',
     {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip',
-        'X-YouTube-Client-Name': '3',
-        'X-YouTube-Client-Version': '19.09.37',
-        'Cookie': 'CONSENT=YES+cb',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'X-YouTube-Client-Name': '1',
+        'X-YouTube-Client-Version': '2.20240101.00.00',
+        'Origin': 'https://www.youtube.com',
+        'Cookie': 'CONSENT=YES+cb.20210328-17-0',
       },
       body: JSON.stringify({
         context: {
           client: {
-            clientName: 'ANDROID',
-            clientVersion: '19.09.37',
-            androidSdkVersion: 30,
+            clientName: 'WEB',
+            clientVersion: '2.20240101.00.00',
             hl: 'en',
           },
         },
@@ -147,23 +146,12 @@ async function fetchViaInnerTube(videoId: string): Promise<string | null> {
   baseUrl = baseUrl.replace(/\\u0026/g, '&');
 
   const captionResp = await fetch(baseUrl + '&fmt=json3');
-  if (!captionResp.ok) throw new Error(`caption HTTP ${captionResp.status}`);
+  if (!captionResp.ok) throw new Error(`caption-HTTP ${captionResp.status}`);
   const captionData: any = await captionResp.json();
 
-  const events: any[] = captionData?.events ?? [];
-  const lines = events
-    .filter((e: any) => e.segs)
-    .map((e: any) => {
-      const secs = Math.floor((e.tStartMs ?? 0) / 1000);
-      const m = String(Math.floor(secs / 60)).padStart(2, '0');
-      const s = String(secs % 60).padStart(2, '0');
-      const text = e.segs.map((seg: any) => seg.utf8 ?? '').join('').trim();
-      return text ? `[${m}:${s}] ${text}` : null;
-    })
-    .filter(Boolean);
-
-  if (!lines.length) throw new Error('no caption events in json3');
-  return lines.join('\n');
+  const text = eventsToText(captionData?.events ?? []);
+  if (!text) throw new Error('no-caption-events');
+  return text;
 }
 
 // Strategy 3: kome.ai free transcript proxy
@@ -185,17 +173,17 @@ export async function fetchSubtitles(videoId: string): Promise<string> {
   try {
     const result = await fetchViaYouTubePage(videoId);
     if (result) return result;
-    errors.push('ytpage: empty response');
+    errors.push('ytpage: empty');
   } catch (e: any) { errors.push(`ytpage: ${e.message}`); }
   try {
     const result = await fetchViaInnerTube(videoId);
     if (result) return result;
-    errors.push('innertube: empty response');
+    errors.push('innertube: empty');
   } catch (e: any) { errors.push(`innertube: ${e.message}`); }
   try {
     const result = await fetchViaKome(videoId);
     if (result) return result;
-    errors.push('kome: empty response');
+    errors.push('kome: empty');
   } catch (e: any) { errors.push(`kome: ${e.message}`); }
   throw new Error(`No captions available for this video. Attempts: ${errors.join('; ')}`);
 }
