@@ -160,7 +160,7 @@ function addSectionButtons() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ sessionId, sectionTitle, sectionContent: content.slice(0, 1000) })
         });
-        const data = await r.json();
+        const data = await r.json(); if (data.error) throw new Error(data.error);
         panel.innerHTML = \`<table>
           <tr><td>Who</td><td>\${data.who}</td></tr>
           <tr><td>What</td><td>\${data.what}</td></tr>
