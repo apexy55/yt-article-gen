@@ -28,17 +28,16 @@ const FALLBACK_SUBTITLES = `[00:00] Welcome to this conversation with Marc Andre
 [07:00] Safety is important but often used as a trojan horse to prevent competition.
 [07:30] The real safety risk is not building AI fast enough - falling behind adversaries is more dangerous.
 [08:00] Learn to use AI tools - they amplify whatever skills you have.
-[08:30] Focus on uniquely human capabilities: creativity, judgment, relationships, leadership.
-[09:00] The people who thrive will be those who partner with AI, not compete against it.`;
+[08:30] Focus on uniquely human capabilities: creativity, judgment, relationships, leadership.`;
 
 export interface Env {
   GEMINI_API_KEY: string;
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-    const { pathname } = url;
+    const pathname = url.pathname;
 
     if (pathname === '/' || pathname === '') {
       return new Response(getHTML(), {
@@ -48,9 +47,8 @@ export default {
 
     if (pathname === '/generate' && request.method === 'POST') {
       try {
-        const body = await request.json() as { url?: string; prompt?: string; sessionId?: string };
-        const sessionId = body.sessionId ?? Math.random().toString(36).slice(2);
-        const videoId = body.url ? extractVideoId(body.url) : null;
+        const body = await request.json() as { url: string; prompt?: string };
+        const videoId = extractVideoId(body.url);
 
         let subtitles: string;
         let subtitleNote = '';
@@ -58,20 +56,22 @@ export default {
           if (!videoId) throw new Error('请提供有效的 YouTube 视频链接');
           subtitles = await fetchSubtitles(videoId);
         } catch (subErr: any) {
-          // Fall back to example content with a notice
           subtitles = FALLBACK_SUBTITLES;
           subtitleNote = `<p style="background:#fff3cd;border:1px solid #ffc107;padding:8px 12px;border-radius:6px;color:#856404;margin-bottom:16px">⚠️ 字幕获取失败（${subErr.message}），展示以下示例内容。</p>`;
         }
 
-        saveContext(sessionId, { videoId: videoId ?? '', subtitles });
+        const sessionId = crypto.randomUUID();
+        saveContext(sessionId, { subtitles, article: '', userPrompt: body.prompt, createdAt: Date.now() });
 
         const { readable, writable } = new TransformStream();
         const writer = writable.getWriter();
         const encoder = new TextEncoder();
 
-        const ctx = async () => {
+        const streamingTask = async () => {
           try {
-            if (subtitleNote) writer.write(encoder.encode(subtitleNote));
+            if (subtitleNote) {
+              writer.write(encoder.encode(subtitleNote));
+            }
             await streamArticle(
               subtitles,
               body.prompt,
@@ -83,13 +83,14 @@ export default {
             );
             finalizeArticle(sessionId);
           } catch (e: any) {
-            writer.write(encoder.encode(`<p style="color:red">错误: ${e.message}</p>`));
+            writer.write(encoder.encode(`<p style="color:red">生成失败: ${e.message}</p>`));
           } finally {
             writer.close();
           }
         };
 
-        ctx();
+        // Use waitUntil to keep the worker alive for the full streaming duration
+        ctx.waitUntil(streamingTask());
 
         return new Response(readable, {
           headers: {
@@ -108,8 +109,8 @@ export default {
     if (pathname === '/5w1h' && request.method === 'POST') {
       try {
         const body = await request.json() as { sessionId: string; sectionTitle: string; sectionContent: string };
-        const ctx = getContext(body.sessionId);
-        if (!ctx) return new Response(JSON.stringify({ error: '会话已过期，请重新生成文章' }), {
+        const ctx2 = getContext(body.sessionId);
+        if (!ctx2) return new Response(JSON.stringify({ error: '会话已过期，请重新生成文章' }), {
           status: 404,
           headers: { 'Content-Type': 'application/json' },
         });
