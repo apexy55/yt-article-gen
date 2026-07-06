@@ -78,20 +78,13 @@ export async function generate5W1H(
   _sessionId: string,
   apiKey: string
 ): Promise<{ who: string; what: string; when: string; where: string; why: string; how: string }> {
-  const prompt = `请对以下文章章节做5W1H分析，用中文回答，每项必须给出实质内容（不能留空或写"未提及"）。
+  const prompt = `Analyze this article section using 5W1H framework. Output ONLY a JSON object with these exact keys: who, what, when, where, why, how. Each value must be a non-empty Chinese string (20-50 characters). Base your answers on the section content, making reasonable inferences if something is not explicitly stated.
 
-章节标题：${sectionTitle}
-章节内容：${sectionContent.slice(0, 2000)}
+Section title: ${sectionTitle}
+Section content: ${sectionContent.slice(0, 2000)}
 
-请严格按照以下格式输出，每行一个，冒号后面直接写答案（20-50字）：
-WHO: （本章节涉及的主要人物、机构或群体，如无明确提及则根据内容推断）
-WHAT: （本章节的核心主题或事件）
-WHEN: （相关时间背景或阶段，如无明确时间则写当前时代背景）
-WHERE: （涉及的地点、领域或场景，如无明确地点则写所属行业或应用场景）
-WHY: （深层原因、动机或重要性）
-HOW: （具体方式、路径或实现机制）
-
-注意：每一项都必须有实质内容，基于章节内容合理推断，不得为空。`;
+Output format (JSON only, no markdown, no explanation):
+{"who":"内容涉及的主体","what":"核心事件或主题","when":"时间背景","where":"地点或领域","why":"原因或重要性","how":"方式或机制"}`;
 
   const resp = await fetch(
     `${GEMINI_API}:generateContent?key=${apiKey}`,
@@ -100,27 +93,34 @@ HOW: （具体方式、路径或实现机制）
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.5, maxOutputTokens: 800 },
+        generationConfig: {
+          temperature: 0.3,
+          maxOutputTokens: 1024,
+          responseMimeType: 'application/json',
+        },
       }),
     }
   );
   if (!resp.ok) throw new Error(`Gemini API 错误 ${resp.status}`);
   const data: any = await resp.json();
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+  const text = (data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}').trim();
 
-  const extract = (key: string): string => {
-    const regex = new RegExp(`^${key}[:：]\\s*(.+)$`, 'im');
-    const m = text.match(regex);
-    const val = m?.[1]?.trim() ?? '';
-    return val && val !== '-' && val !== '–' && val !== '未提及' ? val : `与${sectionTitle}相关的内容`;
-  };
-
-  return {
-    who: extract('WHO'),
-    what: extract('WHAT'),
-    when: extract('WHEN'),
-    where: extract('WHERE'),
-    why: extract('WHY'),
-    how: extract('HOW'),
-  };
+  const fallback = `内容涉及「${sectionTitle}」`;
+  try {
+    const parsed = JSON.parse(text);
+    const clean = (v: unknown) => {
+      const s = String(v ?? '').trim();
+      return s && s !== '-' && s !== '–' && s !== '未提及' && s.length > 2 ? s : fallback;
+    };
+    return {
+      who: clean(parsed.who),
+      what: clean(parsed.what),
+      when: clean(parsed.when),
+      where: clean(parsed.where),
+      why: clean(parsed.why),
+      how: clean(parsed.how),
+    };
+  } catch {
+    return { who: fallback, what: fallback, when: fallback, where: fallback, why: fallback, how: fallback };
+  }
 }
