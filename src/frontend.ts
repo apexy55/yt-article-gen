@@ -49,7 +49,7 @@ textarea{resize:vertical;min-height:80px}
     <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=...">
     <p style="font-size:.82rem;color:#888;margin-top:6px">提示：若字幕获取失败，系统会自动使用内置示例字幕（xRh2sVcNXQ8）</p>
     <label style="margin-top:16px">💬 生成要求（可选）</label>
-    <textarea id="prompt" placeholder="例：请用通俧易懂的语言介绍，面向初学者，强调实际行动建议..."></textarea>
+    <textarea id="prompt" placeholder="例：请用通俗易懂的语言介绍，面向初学者，强调实际行动建议..."></textarea>
     <button class="btn" id="generateBtn" onclick="generate()">✨ 生成文章</button>
     <div id="status"></div>
   </div>
