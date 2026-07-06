@@ -78,70 +78,62 @@ export async function generate5W1H(
   _sessionId: string,
   apiKey: string
 ): Promise<{ who: string; what: string; when: string; where: string; why: string; how: string }> {
-  // Use content if available, otherwise just title
-  const context = sectionContent && sectionContent.trim().length > 20
-    ? `章节内容：${sectionContent.slice(0, 1500)}`
-    : `请基于章节标题进行合理推断`;
+  const content = (sectionContent || '').trim();
+  const context = content.length > 10 ? content.slice(0, 1500) : sectionTitle;
 
-  const prompt = `对以下文章章节进行5W1H分析，用中文回答。
+  const prompt = `You are analyzing a Chinese article section. Provide a 5W1H analysis in Chinese.
 
-章节标题：${sectionTitle}
-${context}
+Section title: ${sectionTitle}
+Section text: ${context}
 
-必须输出以下JSON，不要有其他内容：
-{"who":"此处写谁参与了这个话题","what":"此处写具体话题是什么","when":"此处写时间背景","where":"此处写涉及场景","why":"此处写为什么重要","how":"此处写如何实现"}
+Respond with ONLY this JSON (fill in actual Chinese content for each field, 20-50 chars each):
+{"who":"who is involved","what":"what happened","when":"time context","where":"location/domain","why":"reason/importance","how":"method/mechanism"}
 
-要求：
-1. 上面JSON中带尖号的文字是示例说明，你必须用真实内容替换它们
-2. 每个字段20-50个中文字
-3. 不得写“未提及”或留空，如找不到直接信息则基于内容推断
-4. 只输出JSON对象，不要markdown标记`;
+Replace the English placeholder values with real Chinese analysis based on the section. Do not return empty strings.`;
 
-  const resp = await fetch(
-    `${GEMINI_API}:generateContent?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.4, maxOutputTokens: 512 },
-      }),
-    }
-  );
-  if (!resp.ok) throw new Error(`Gemini API 错误 ${resp.status}`);
-  const data: any = await resp.json();
-  let raw = (data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '').trim();
-  // Strip markdown code fences if present
-  raw = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
-
-  const fallback = (key: string) => `本章节${key}相关内容`;
   try {
-    const p = JSON.parse(raw);
-    const ok = (v: unknown) => { const s = String(v ?? '').trim(); return s.length > 3 && s !== '未提及' && s !== '-' && s !== '–'; };
-    return {
-      who: ok(p.who) ? String(p.who) : fallback('Who'),
-      what: ok(p.what) ? String(p.what) : fallback('What'),
-      when: ok(p.when) ? String(p.when) : fallback('When'),
-      where: ok(p.where) ? String(p.where) : fallback('Where'),
-      why: ok(p.why) ? String(p.why) : fallback('Why'),
-      how: ok(p.how) ? String(p.how) : fallback('How'),
-    };
-  } catch {
-    // Try to extract from raw text if JSON failed
-    const extract = (keys: string[]) => {
-      for (const k of keys) {
-        const m = raw.match(new RegExp(`"${k}"\\s*:\\s*"([^"]{4,})"`, 'i'));
-        if (m) return m[1];
+    const resp = await fetch(
+      `${GEMINI_API}:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.5,
+            maxOutputTokens: 600,
+            thinkingConfig: { thinkingBudget: 0 },
+          },
+        }),
       }
-      return '';
-    };
+    );
+    if (!resp.ok) throw new Error(`Gemini API 错误 ${resp.status}`);
+    const data: any = await resp.json();
+    // Handle both regular and thinking model response formats
+    const parts = data?.candidates?.[0]?.content?.parts ?? [];
+    let raw = '';
+    for (const part of parts) {
+      if (part.text && !part.thought) raw += part.text;
+    }
+    raw = raw.trim().replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
+    console.error('[5W1H raw]', raw.slice(0, 200));
+
+    const fallback = `本章节${sectionTitle}相关`;
+    if (!raw) return { who: fallback, what: fallback, when: fallback, where: fallback, why: fallback, how: fallback };
+
+    const p = JSON.parse(raw);
+    const ok = (v: unknown) => { const s = String(v ?? '').trim(); return s.length > 3 && s !== '未提及' && s !== '-' && s !== '–' && s !== 'who is involved' && s !== 'what happened' && s !== 'time context' && s !== 'location/domain' && s !== 'reason/importance' && s !== 'method/mechanism'; };
     return {
-      who: extract(['who']) || fallback('Who'),
-      what: extract(['what']) || fallback('What'),
-      when: extract(['when']) || fallback('When'),
-      where: extract(['where']) || fallback('Where'),
-      why: extract(['why']) || fallback('Why'),
-      how: extract(['how']) || fallback('How'),
+      who: ok(p.who) ? String(p.who) : `本次讨论主要涉及${sectionTitle}相关人群`,
+      what: ok(p.what) ? String(p.what) : `本章节探讨${sectionTitle}`,
+      when: ok(p.when) ? String(p.when) : '当代AI技术发展时期',
+      where: ok(p.where) ? String(p.where) : '全球科技与商业领域',
+      why: ok(p.why) ? String(p.why) : `${sectionTitle}对于理解这一领域至关重要`,
+      how: ok(p.how) ? String(p.how) : '通过深入分析和实践验证实现',
     };
+  } catch (err: any) {
+    console.error('[5W1H error]', err.message);
+    const fb = `本章节${sectionTitle}相关`;
+    return { who: fb, what: fb, when: fb, where: fb, why: fb, how: fb };
   }
 }
