@@ -78,13 +78,24 @@ export async function generate5W1H(
   _sessionId: string,
   apiKey: string
 ): Promise<{ who: string; what: string; when: string; where: string; why: string; how: string }> {
-  const prompt = `Analyze this article section using 5W1H framework. Output ONLY a JSON object with these exact keys: who, what, when, where, why, how. Each value must be a non-empty Chinese string (20-50 characters). Base your answers on the section content, making reasonable inferences if something is not explicitly stated.
+  // Use content if available, otherwise just title
+  const context = sectionContent && sectionContent.trim().length > 20
+    ? `章节内容：${sectionContent.slice(0, 1500)}`
+    : `请基于章节标题进行合理推断`;
 
-Section title: ${sectionTitle}
-Section content: ${sectionContent.slice(0, 2000)}
+  const prompt = `对以下文章章节进行5W1H分析，用中文回答。
 
-Output format (JSON only, no markdown, no explanation):
-{"who":"内容涉及的主体","what":"核心事件或主题","when":"时间背景","where":"地点或领域","why":"原因或重要性","how":"方式或机制"}`;
+章节标题：${sectionTitle}
+${context}
+
+必须输出以下JSON，不要有其他内容：
+{"who":"此处写谁参与了这个话题","what":"此处写具体话题是什么","when":"此处写时间背景","where":"此处写涉及场景","why":"此处写为什么重要","how":"此处写如何实现"}
+
+要求：
+1. 上面JSON中带尖号的文字是示例说明，你必须用真实内容替换它们
+2. 每个字段20-50个中文字
+3. 不得写“未提及”或留空，如找不到直接信息则基于内容推断
+4. 只输出JSON对象，不要markdown标记`;
 
   const resp = await fetch(
     `${GEMINI_API}:generateContent?key=${apiKey}`,
@@ -93,34 +104,44 @@ Output format (JSON only, no markdown, no explanation):
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.3,
-          maxOutputTokens: 1024,
-          responseMimeType: 'application/json',
-        },
+        generationConfig: { temperature: 0.4, maxOutputTokens: 512 },
       }),
     }
   );
   if (!resp.ok) throw new Error(`Gemini API 错误 ${resp.status}`);
   const data: any = await resp.json();
-  const text = (data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}').trim();
+  let raw = (data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '').trim();
+  // Strip markdown code fences if present
+  raw = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
 
-  const fallback = `内容涉及「${sectionTitle}」`;
+  const fallback = (key: string) => `本章节${key}相关内容`;
   try {
-    const parsed = JSON.parse(text);
-    const clean = (v: unknown) => {
-      const s = String(v ?? '').trim();
-      return s && s !== '-' && s !== '–' && s !== '未提及' && s.length > 2 ? s : fallback;
-    };
+    const p = JSON.parse(raw);
+    const ok = (v: unknown) => { const s = String(v ?? '').trim(); return s.length > 3 && s !== '未提及' && s !== '-' && s !== '–'; };
     return {
-      who: clean(parsed.who),
-      what: clean(parsed.what),
-      when: clean(parsed.when),
-      where: clean(parsed.where),
-      why: clean(parsed.why),
-      how: clean(parsed.how),
+      who: ok(p.who) ? String(p.who) : fallback('Who'),
+      what: ok(p.what) ? String(p.what) : fallback('What'),
+      when: ok(p.when) ? String(p.when) : fallback('When'),
+      where: ok(p.where) ? String(p.where) : fallback('Where'),
+      why: ok(p.why) ? String(p.why) : fallback('Why'),
+      how: ok(p.how) ? String(p.how) : fallback('How'),
     };
   } catch {
-    return { who: fallback, what: fallback, when: fallback, where: fallback, why: fallback, how: fallback };
+    // Try to extract from raw text if JSON failed
+    const extract = (keys: string[]) => {
+      for (const k of keys) {
+        const m = raw.match(new RegExp(`"${k}"\\s*:\\s*"([^"]{4,})"`, 'i'));
+        if (m) return m[1];
+      }
+      return '';
+    };
+    return {
+      who: extract(['who']) || fallback('Who'),
+      what: extract(['what']) || fallback('What'),
+      when: extract(['when']) || fallback('When'),
+      where: extract(['where']) || fallback('Where'),
+      why: extract(['why']) || fallback('Why'),
+      how: extract(['how']) || fallback('How'),
+    };
   }
 }
