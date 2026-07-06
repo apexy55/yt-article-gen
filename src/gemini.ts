@@ -7,7 +7,7 @@ export async function streamArticle(
   onChunk: (text: string) => void | Promise<void>
 ): Promise<string> {
   const constraint = userPrompt
-    ? `\n\n用户要求（请尽量满足，但不超出范围）：  \n${userPrompt}`
+    ? `\n\n用户要求（请尽量满足，但不超出范围）：\n${userPrompt}`
     : '';
   const prompt = `你是专业内容创作者。请基于以下YouTube字幕，生成一篇精彩的中文视频对话内容文章。
 
@@ -78,26 +78,20 @@ export async function generate5W1H(
   _sessionId: string,
   apiKey: string
 ): Promise<{ who: string; what: string; when: string; where: string; why: string; how: string }> {
-  const prompt = `你是一位内容分析师。我需要你对一个文章章节做完整的5W1H分析。
+  const prompt = `请对以下文章章节做5W1H分析，用中文回答，每项必须给出实质内容（不能留空或写"未提及"）。
 
 章节标题：${sectionTitle}
-章节内容：${sectionContent.slice(0, 1500)}
+章节内容：${sectionContent.slice(0, 2000)}
 
-以下是你必须输出的JSON格式（全部字段必填完整内容）：
-{
-  "who": "本章节涉及的主要人物、机构或群体",
-  "what": "本章节的核心事件、现象或主题",
-  "when": "相关时间背景、发展阶段或时代特征",
-  "where": "涉及的地点、领域、市场或应用场景",
-  "why": "深层原因、动机或重要性",
-  "how": "具体方式、路径或实现机制"
-}
+请严格按照以下格式输出，每行一个，冒号后面直接写答案（20-50字）：
+WHO: （本章节涉及的主要人物、机构或群体，如无明确提及则根据内容推断）
+WHAT: （本章节的核心主题或事件）
+WHEN: （相关时间背景或阶段，如无明确时间则写当前时代背景）
+WHERE: （涉及的地点、领域或场景，如无明确地点则写所属行业或应用场景）
+WHY: （深层原因、动机或重要性）
+HOW: （具体方式、路径或实现机制）
 
-严格要求：
-1. 每个字段必须写实质性的中文内容，不得写汉字“未提及”也不得留空，不得用“-”或“–”
-2. 如果章节未明确说明某个维度，则基于章节内容和标题合理推断，并给出有意义的总结
-3. 每个字段不超过50字
-4. 只输出JSON，不要添加任何其他文字或代码块`;
+注意：每一项都必须有实质内容，基于章节内容合理推断，不得为空。`;
 
   const resp = await fetch(
     `${GEMINI_API}:generateContent?key=${apiKey}`,
@@ -106,38 +100,27 @@ export async function generate5W1H(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.4, maxOutputTokens: 600 },
+        generationConfig: { temperature: 0.5, maxOutputTokens: 800 },
       }),
     }
   );
   if (!resp.ok) throw new Error(`Gemini API 错误 ${resp.status}`);
   const data: any = await resp.json();
-  let text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
-  text = text.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
-  try {
-    const parsed = JSON.parse(text);
-    // Replace any empty/dash values with a fallback summary
-    const clean = (v: string) => (!v || v === '-' || v === '\u2013' || v === '\u2014' || v.trim() === '') ? `详见章节内容` : v;
-    return {
-      who: clean(parsed.who),
-      what: clean(parsed.what),
-      when: clean(parsed.when),
-      where: clean(parsed.where),
-      why: clean(parsed.why),
-      how: clean(parsed.how),
-    };
-  } catch {
-    const extract = (key: string) => {
-      const m = text.match(new RegExp(`"${key}"\\s*:\\s*"([^"]*)"`, 'i'));
-      return m?.[1] || `详见章节内容`;
-    };
-    return {
-      who: extract('who'),
-      what: extract('what'),
-      when: extract('when'),
-      where: extract('where'),
-      why: extract('why'),
-      how: extract('how'),
-    };
-  }
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+
+  const extract = (key: string): string => {
+    const regex = new RegExp(`^${key}[:：]\\s*(.+)$`, 'im');
+    const m = text.match(regex);
+    const val = m?.[1]?.trim() ?? '';
+    return val && val !== '-' && val !== '–' && val !== '未提及' ? val : `与${sectionTitle}相关的内容`;
+  };
+
+  return {
+    who: extract('WHO'),
+    what: extract('WHAT'),
+    when: extract('WHEN'),
+    where: extract('WHERE'),
+    why: extract('WHY'),
+    how: extract('HOW'),
+  };
 }
