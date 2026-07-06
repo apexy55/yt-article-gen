@@ -38,26 +38,23 @@ textarea{resize:vertical;min-height:80px}
 .w5h1-panel td{padding:8px 12px;border-bottom:1px solid #e0e0e0;font-size:.9rem}
 .w5h1-panel td:first-child{font-weight:700;color:#5c6bc0;width:70px;white-space:nowrap}
 .w5h1-loading{color:#888;font-size:.85rem;padding:8px 0}
-.fallback-hint{font-size:.82rem;color:#999;margin-top:6px}
 </style>
 </head>
 <body>
 <div class="container">
   <h1>🎥 YouTube 内容文章生成器</h1>
   <p class="subtitle">基于 Gemini AI，将 YouTube 字幕转化为深度中文文章</p>
-
   <div class="card">
-    <label for="url">🔗 YouTube 视频链接</label>
+    <label>🔗 YouTube 视频链接</label>
     <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=...">
-    <p style="font-size:.82rem;color:#999;margin-top:6px">提示：若字幕获取失败，系统会自动使用内置示例字幕（xRh2sVcNXQ8）</p>
-    <label for="prompt" style="margin-top:16px">💬 生成要求（可选）</label>
-    <textarea id="prompt" placeholder="例：请用通俗易懂的语言介绍，面向初学者，强调实际行动建议…"></textarea>
-    <button class="btn" id="generateBtn" onclick="generate()" style="margin-top:16px">✨ 生成文章</button>
+    <p style="font-size:.82rem;color:#888;margin-top:6px">提示：若字幕获取失败，系统会自动使用内置示例字幕（xRh2sVcNXQ8）</p>
+    <label style="margin-top:16px">💬 生成要求（可选）</label>
+    <textarea id="prompt" placeholder="例：请用通俧易懂的语言介绍，面向初学者，强调实际行动建议..."></textarea>
+    <button class="btn" id="generateBtn" onclick="generate()">✨ 生成文章</button>
     <div id="status"></div>
   </div>
-
-  <div id="article-wrap">
-    <div id="article" class="card"></div>
+  <div id="article-wrap" class="card">
+    <div id="article"></div>
   </div>
 </div>
 <script>
@@ -78,11 +75,7 @@ async function generate() {
   sessionId = Math.random().toString(36).slice(2);
   const body = { url: urlVal, prompt: promptVal, sessionId };
   try {
-    const resp = await fetch('/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
+    const resp = await fetch('/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     if (!resp.ok) { const err = await resp.text(); throw new Error(err); }
     articleWrap.style.display = 'block';
     status.textContent = '正在生成文章...';
@@ -108,6 +101,21 @@ async function generate() {
   }
 }
 
+function getSectionContent(h2) {
+  // Collect all text from siblings after h2 until next h2
+  let content = '';
+  let el = h2.nextElementSibling;
+  while (el) {
+    if (el.tagName === 'H2') break;
+    // Skip the w5h1-panel div
+    if (!el.classList.contains('w5h1-panel')) {
+      content += el.textContent + ' ';
+    }
+    el = el.nextElementSibling;
+  }
+  return content.trim();
+}
+
 function addSectionButtons() {
   document.querySelectorAll('#article h2[data-section]').forEach(h2 => {
     if (h2.querySelector('.w5h1-btn')) return;
@@ -117,13 +125,7 @@ function addSectionButtons() {
     const panel = document.createElement('div');
     panel.className = 'w5h1-panel';
     panel.innerHTML = '<div class="w5h1-loading">加载中...</div>';
-    btn.onclick = () => {
-      if (panel.style.display === 'block') {
-        panel.style.display = 'none';
-      } else {
-        panel.style.display = 'block';
-      }
-    };
+    btn.onclick = () => { panel.style.display = panel.style.display === 'block' ? 'none' : 'block'; };
     h2.appendChild(btn);
     h2.insertAdjacentElement('afterend', panel);
   });
@@ -146,18 +148,13 @@ async function preloadAll5W1H() {
     const btn = h2.querySelector('.w5h1-btn');
     const panel = h2.nextElementSibling;
     if (!btn || !panel) return;
-    const sectionTitle = h2.textContent.replace('[5W1H]', '').trim();
-    let content = '';
-    let el = panel.nextElementSibling;
-    while (el && el.tagName !== 'H2') {
-      content += el.textContent + ' ';
-      el = el.nextElementSibling;
-    }
+    const sectionTitle = h2.childNodes[0]?.textContent?.trim() || h2.textContent.replace('[5W1H]','').trim();
+    const sectionContent = getSectionContent(h2);
     try {
       const r = await fetch('/5w1h', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId, sectionTitle, sectionContent: content.slice(0, 1000) })
+        body: JSON.stringify({ sessionId, sectionTitle, sectionContent: sectionContent.slice(0, 2000) })
       });
       const data = await r.json();
       if (data.error) throw new Error(data.error);
