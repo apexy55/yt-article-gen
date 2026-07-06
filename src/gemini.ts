@@ -78,24 +78,26 @@ export async function generate5W1H(
   _sessionId: string,
   apiKey: string
 ): Promise<{ who: string; what: string; when: string; where: string; why: string; how: string }> {
-  const prompt = `你是一位专业内容分析师。请对以下文章章节进行5W1H分析。
+  const prompt = `你是一位内容分析师。我需要你对一个文章章节做完整的5W1H分析。
 
 章节标题：${sectionTitle}
 章节内容：${sectionContent.slice(0, 1500)}
 
-要求：
-- 输出中文JSON对象，包含who/what/when/where/why/how六个字段
-- 每个字段必须提供具体内容，不能留空或写“未提及”
-- 如果章节没有明确提及该信息，则基于文章主题和上下文进行合理推断和总结
-- 每个字段不超过50字，言简意赅
-- 字段含义：
-  - who：涉及的主要人物、机构、群体（如无明确主语，写主要讨论对象）
-  - what：当前章节的核心事件、现象或观点是什么
-  - when：时间背景或发展阶段（如无明确时间，写当前阶段或近年趋势）
-  - where：涉及的地点、领域或场景（如无明确地点，写应用领域或市场范围）
-  - why：深层原因、动机或重要性
-  - how：具体方式、路径或实现机制
-- 直接输出JSON，不要包裹在代码块中`;
+以下是你必须输出的JSON格式（全部字段必填完整内容）：
+{
+  "who": "本章节涉及的主要人物、机构或群体",
+  "what": "本章节的核心事件、现象或主题",
+  "when": "相关时间背景、发展阶段或时代特征",
+  "where": "涉及的地点、领域、市场或应用场景",
+  "why": "深层原因、动机或重要性",
+  "how": "具体方式、路径或实现机制"
+}
+
+严格要求：
+1. 每个字段必须写实质性的中文内容，不得写汉字“未提及”也不得留空，不得用“-”或“–”
+2. 如果章节未明确说明某个维度，则基于章节内容和标题合理推断，并给出有意义的总结
+3. 每个字段不超过50字
+4. 只输出JSON，不要添加任何其他文字或代码块`;
 
   const resp = await fetch(
     `${GEMINI_API}:generateContent?key=${apiKey}`,
@@ -104,7 +106,7 @@ export async function generate5W1H(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.5, maxOutputTokens: 512 },
+        generationConfig: { temperature: 0.4, maxOutputTokens: 600 },
       }),
     }
   );
@@ -113,11 +115,21 @@ export async function generate5W1H(
   let text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
   text = text.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
   try {
-    return JSON.parse(text);
+    const parsed = JSON.parse(text);
+    // Replace any empty/dash values with a fallback summary
+    const clean = (v: string) => (!v || v === '-' || v === '\u2013' || v === '\u2014' || v.trim() === '') ? `详见章节内容` : v;
+    return {
+      who: clean(parsed.who),
+      what: clean(parsed.what),
+      when: clean(parsed.when),
+      where: clean(parsed.where),
+      why: clean(parsed.why),
+      how: clean(parsed.how),
+    };
   } catch {
     const extract = (key: string) => {
       const m = text.match(new RegExp(`"${key}"\\s*:\\s*"([^"]*)"`, 'i'));
-      return m ? m[1] : '-';
+      return m?.[1] || `详见章节内容`;
     };
     return {
       who: extract('who'),
